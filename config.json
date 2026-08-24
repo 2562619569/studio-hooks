@@ -1,0 +1,7 @@
+{
+  "hooks": [
+    "context_menu_demo.js"
+  ],
+  "studioPath": null,
+  "studioArgs": []
+}
