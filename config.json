@@ -1,7 +1,18 @@
 {
   "hooks": [
-    "context_menu_demo.js"
+    "menu_engine.js"
+  ],
+  "menuEntries": [
+    { "text": "📦 在摄像机前方生成 Part", "action": "spawn_part", "areas": ["all"] },
+    { "text": "🧭 显示摄像机信息", "action": "camera_info", "areas": ["viewport"] },
+    { "text": "🔍 统计选中对象", "action": "selection_info", "areas": ["explorer"] }
+  ],
+  "areaZones": [
+    { "area": "explorer",   "x": [0.70, 1.00], "y": [0.02, 0.55] },
+    { "area": "properties", "x": [0.70, 1.00], "y": [0.55, 0.98] },
+    { "area": "viewport",   "x": [0.00, 0.70], "y": [0.08, 0.98] }
   ],
   "studioPath": null,
-  "studioArgs": []
+  "studioArgs": [],
+  "debug": true
 }
