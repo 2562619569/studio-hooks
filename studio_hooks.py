@@ -19,8 +19,8 @@ import argparse
 import glob
 import json
 import os
-import signal
 import sys
+import threading
 import time
 from datetime import datetime
 from pathlib import Path
@@ -91,19 +91,27 @@ def run_session(device, target_pid_or_spawn, cfg, attach_mode):
     script = session.create_script(source, name="studio-hooks")
     script.on("message", on_message_factory(log_file))
     script.load()
-    print("[*] hooks loaded, session log: %s" % log_path)
+    print("[*] hooks loaded, session log: %s" % log_path, flush=True)
 
     if not attach_mode:
         device.resume(target_pid_or_spawn)
 
+    done = threading.Event()
+
+    def on_detached(reason, *extra):
+        print("[*] session detached: %s" % reason, flush=True)
+        done.set()
+
+    session.on("detached", on_detached)
+    print("[*] watching Studio (Ctrl+C to detach, Studio keeps running)", flush=True)
     try:
-        sys.stdin.read() if sys.stdin.isatty() else time.sleep(1 << 30)
+        while not done.is_set():
+            time.sleep(0.5)
     except KeyboardInterrupt:
         pass
     finally:
         session.detach()
         log_file.close()
-        print("[*] detached (Studio keeps running)")
 
 
 def main():
