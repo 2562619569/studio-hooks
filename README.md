@@ -11,18 +11,21 @@ Studio 每周更新版本目录后无需改代码（launcher 运行时自动发�
 
 ```
 hooks/*.js (Frida, 进程内)                actions/*.lua (DataModel 内)
-  QApplication::notify → 识别右键区域          spawn_part / camera_info / ...
+  QApplication::focusWidget → 识别右键区域    spawn_part / camera_info / ...
   QMenu::exec/popup  → 注入菜单条目                  ▲
         │ 点击                                       │ execute_luau (MCP)
         ▼                                            │
-  send({menu_trigger, action, area}) ──► studio_hooks.py ──► StudioMCP.exe 代理
-                                        (spawn Studio + 持有代理 + 分发动作)
+  send({menu_trigger/menu_show}) ──► studio_hooks.py ──► StudioMCP.exe 代理
+                                    (spawn Studio + 持有代理 + 分发动作)
 ```
 
-- **菜单层**（`hooks/menu_engine.js`）：声明式引擎。`QMenu::exec/popup`
-  弹出时的全局坐标与 `areaZones` 屏幕分区比对判定区域（Explorer/3D 视口
-  等，零原生调用、不碰热点函数）；弹出前注入匹配条目，点击后把返回值
-  伪装成"未选择"，Studio 主程序无感知。
+- **菜单层**（`hooks/menu_engine.js`）：声明式引擎。菜单弹出时取
+  `QApplication::focusWidget()`——右键那一刻的焦点控件必然在目标面板内
+  （Explorer 树 / 3D 视口 / 属性视图…），沿 `parent()` 链收集 `objectName`
+  与 `areaRules` 正则匹配判定区域——面板拖动/浮动都不影响；弹出前注入
+  匹配条目，点击后把返回值伪装成"未选择"，Studio 主程序无感知。
+  每次右键同时上报 `menu_show` 事件，launcher 经 MCP `print` 到 Studio
+  Output 窗口，区域判定结果实时可见。
 - **动作层**（`actions/*.lua`）：每次调用时从磁盘读取，改 Lua 不用重启。
   脚本内可用 `HOOK_AREA` 变量获知触发区域。
 - **MCP 层**：Studio 内置 MCP 客户端反向连接 `StudioMCP.exe` 代理
@@ -56,9 +59,9 @@ return ("hello from %s, selected=%d"):format(HOOK_AREA, #game:GetService("Select
 
 3. 重启 Studio（`python studio_hooks.py --kill` 再启动）。完成。
 
-`areas` 取值：`all` 或 `areaZones` 里定义的区域名。区域是主屏上的矩形
-分区（`x`/`y` 为屏幕宽高的比例），把 Studio 各面板的位置圈出来即可；
-`debug: true` 时每次右键会打印弹出坐标和判定区域，方便校准分区。
+`areas` 取值：`all` 或 `areaRules` 里定义的区域名。区域按"鼠标下控件的
+objectName 链"识别，面板拖到哪都跟随；`debug: true` 时每次右键打印完整
+objectName 链与判定结果，发现新面板时照着链上的名字加一条规则即可。
 
 ## 配置（config.json）
 
@@ -66,9 +69,9 @@ return ("hello from %s, selected=%d"):format(HOOK_AREA, #game:GetService("Select
 |---|---|
 | `hooks` | 启用的 Frida 模块（`00_compat.js` 自动前置，勿手动加） |
 | `menuEntries` | 右键菜单条目：`text` 显示文字 / `action` 对应 actions 文件名 / `areas` 生效区域 |
-| `areaZones` | 区域分区：`area` 名称 + `x`/`y` 两个元素的屏幕比例区间 |
+| `areaRules` | 区域规则：`area` 名称 + `match`（对右键处控件 objectName 链的正则） |
 | `studioPath` / `studioArgs` | 覆盖自动发现的 Studio 路径 / 附加启动参数 |
-| `debug` | true 时日志打印每次右键的弹出坐标与区域（校准分区用） |
+| `debug` | true 时日志打印每次右键的 objectName 链与判定区域 |
 
 ## 添加新的 hook 模块（不限于菜单）
 
@@ -86,15 +89,29 @@ hooks/            Frida 模块（00_compat 为共享兼容层）
 actions/          Luau 动作脚本（按 action 名对应文件）
 docs/mcp_interface.md   Studio MCP 26 个工具的接口文档
 tools/mcp_probe.py      独立 MCP 探测脚本（调试用）
+tools/check_exports.py  枚举 Qt DLL 导出符号（验证 mangled 名）
+tools/probe_qt.py       独立 Qt API 探针（ABI/调用方式验证）
+tools/probe_explorer.py 网格扫描各面板控件的真实屏幕坐标
+tools/right_click.py    模拟右键指定坐标（自动化测试）
+tools/screenshot.py     全屏截图（配合视觉模型核验）
 logs/             会话日志（gitignore）
 ```
 
 ## 已验证能力
 
 - 向所有 `QMenu::exec/popup` 菜单注入条目、伪装返回值（Studio 无感知）
-- 右键区域识别 + 按区域注入不同条目
+- 右键区域识别 + 按区域注入不同条目（实测：3D 视口=viewport、
+  Explorer=explorer、其他面板=other，判定链见 Output）
+- 右键时区域判定结果实时 `print` 到 Studio Output 窗口
 - 菜单点击 → MCP `execute_luau` 在 Edit datamodel 执行任意 Luau
   （含 ChangeHistory 撤销记录）
+
+## Qt ABI 注意（重要）
+
+Roblox 自带的 Qt5*.dll 虽是 MSVC 修饰名，但**按值返回的 8 字节对象
+（QString/QPoint）走 `this=RCX, sret缓冲=RDX` 的布局**（Clang 风格，
+不是 MSVC 的"sret 占 RCX"）。用 Frida 调这类函数时参数顺序必须是
+`(this, 输出缓冲, 其余参数)`，已用反汇编验证（见 menu_engine.js 注释）。
 
 ## 注意
 

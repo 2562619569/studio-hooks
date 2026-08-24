@@ -174,6 +174,14 @@ class StudioMcp:
 ACTIONS_DIR = ROOT / "actions"
 
 
+def lua_quote(s):
+    """Escape a Python string as a Luau double-quoted literal."""
+    s = (s.replace("\\", "\\\\").replace('"', '\\"')
+          .replace("\n", "\\n").replace("\r", ""))
+    s = "".join(c for c in s if ord(c) >= 32)  # drop other control chars
+    return '"%s"' % s
+
+
 class Actions:
     def __init__(self, mcp, log):
         self.mcp = mcp
@@ -206,6 +214,16 @@ class Actions:
         r = self.mcp.execute_luau(sid, code)
         status = "error" if r["isError"] else "ok"
         self.log("[action] %s -> %s: %s" % (name, status, r["text"]))
+
+    def print_to_output(self, text):
+        """print() inside Studio so the message lands in the Output panel."""
+        sid = self.ensure_studio()
+        if not sid:
+            self.log("[print] skipped: no Studio connected to MCP")
+            return
+        r = self.mcp.execute_luau(sid, "print(%s)" % lua_quote(text))
+        if r["isError"]:
+            self.log("[print] error: %s" % r["text"][:300])
 
 
 # ------------------------------------------------------------------ launcher
@@ -253,7 +271,7 @@ def find_studio():
 def build_script_source(cfg):
     menu_cfg = {
         "entries": cfg.get("menuEntries", []),
-        "areaZones": cfg.get("areaZones", []),
+        "areaRules": cfg.get("areaRules", []),
         "debug": cfg.get("debug", False),
     }
     parts = ["// ---- %s (compat) ----" % COMPAT,
@@ -293,6 +311,14 @@ def run_session(device, pid, cfg, attach_mode, log_file):
                 log("[hook] menu_trigger: %s (area=%s)" %
                     (payload.get("action"), payload.get("area")))
                 actions.dispatch(payload.get("action"), payload.get("area"))
+            elif payload.get("event") == "menu_show":
+                area = payload.get("area")
+                chain = payload.get("chain", "")
+                log("[hook] menu_show @(%s,%s) area=%s chain=%s" %
+                    (payload.get("x"), payload.get("y"), area, chain))
+                actions.print_to_output(
+                    "[studio-hooks] 右键 @(%s,%s) → 区域: %s\n  身份链: %s"
+                    % (payload.get("x"), payload.get("y"), area, chain))
             else:
                 log("[hook] %s" % payload)
         elif message["type"] == "error":
