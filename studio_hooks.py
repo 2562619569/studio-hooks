@@ -165,6 +165,15 @@ class StudioMcp:
             "code": code, "datamodel_type": "Edit", "studio_id": studio_id},
             timeout=timeout)
 
+    def stop(self):
+        if self.proc:
+            try:
+                self.proc.stdin.close()
+                self.proc.terminate()
+            except OSError:
+                pass
+            self.proc = None
+
 
 # ------------------------------------------------------------------ actions
 # Menu items declared by hook modules dispatch here by name.
@@ -172,6 +181,33 @@ class StudioMcp:
 # can be edited without restarting the launcher.
 
 ACTIONS_DIR = ROOT / "actions"
+
+
+def set_clipboard_text(text):
+    """Write text to the Windows clipboard (CF_UNICODETEXT, no deps)."""
+    import ctypes
+    from ctypes import wintypes
+
+    user32 = ctypes.windll.user32
+    kernel32 = ctypes.windll.kernel32
+    kernel32.GlobalAlloc.restype = ctypes.c_void_p
+    kernel32.GlobalLock.restype = ctypes.c_void_p
+    kernel32.GlobalLock.argtypes = [ctypes.c_void_p]
+    kernel32.GlobalUnlock.argtypes = [ctypes.c_void_p]
+    user32.SetClipboardData.argtypes = [wintypes.UINT, ctypes.c_void_p]
+
+    data = text.encode("utf-16-le") + b"\x00\x00"
+    if not user32.OpenClipboard(None):
+        raise OSError("OpenClipboard failed")
+    try:
+        user32.EmptyClipboard()
+        h = kernel32.GlobalAlloc(0x0002, len(data))       # GMEM_MOVEABLE
+        p = kernel32.GlobalLock(h)
+        ctypes.memmove(p, data, len(data))
+        kernel32.GlobalUnlock(h)
+        user32.SetClipboardData(13, h)                    # CF_UNICODETEXT
+    finally:
+        user32.CloseClipboard()
 
 
 def lua_quote(s):
@@ -187,7 +223,9 @@ class Actions:
         self.mcp = mcp
         self.log = log
         self.studio_id = None
-        self.handlers = {"spawn_part": self.run_lua_action}
+        # Actions needing more than "run the lua and log its result";
+        # anything not listed falls back to run_lua_action.
+        self.handlers = {"copy_instance_path": self.copy_path_action}
 
     def ensure_studio(self):
         if self.studio_id is None:
@@ -195,10 +233,9 @@ class Actions:
         return self.studio_id
 
     def dispatch(self, name, arg=None):
-        handler = self.handlers.get(name)
-        if not handler:
-            self.log("[action] no handler for %r" % name)
+        if not name:
             return
+        handler = self.handlers.get(name, self.run_lua_action)
         try:
             handler(name, arg)
         except Exception as e:  # noqa: BLE001 - action layer must not kill session
@@ -214,6 +251,27 @@ class Actions:
         r = self.mcp.execute_luau(sid, code)
         status = "error" if r["isError"] else "ok"
         self.log("[action] %s -> %s: %s" % (name, status, r["text"]))
+
+    def copy_path_action(self, name, area):
+        """Run copy_instance_path.lua and put the returned path(s) on the
+        Windows clipboard (Luau has no clipboard API)."""
+        sid = self.ensure_studio()
+        if not sid:
+            self.log("[action] %s skipped: no Studio connected to MCP" % name)
+            return
+        code = (ACTIONS_DIR / ("%s.lua" % name)).read_text(encoding="utf-8")
+        code = 'local HOOK_AREA = "%s"\n' % (area or "other") + code
+        r = self.mcp.execute_luau(sid, code)
+        if r["isError"]:
+            self.log("[action] %s error: %s" % (name, r["text"][:300]))
+            return
+        text = r["text"].strip().strip('"')
+        if not text:
+            self.log("[action] %s: empty result" % name)
+            return
+        set_clipboard_text(text)
+        self.log("[action] %s -> clipboard (%d chars): %s" %
+                 (name, len(text), text.replace("\n", " | ")))
 
     def print_to_output(self, text):
         """print() inside Studio so the message lands in the Output panel."""
@@ -351,13 +409,45 @@ def run_session(device, pid, cfg, attach_mode, log_file):
         pass
     finally:
         session.detach()
+        mcp.stop()          # free the proxy's port before the next session
         log_file.close()
+
+
+def watch_loop(device, cfg):
+    """Stay resident forever: whenever RobloxStudioBeta.exe starts (however
+    it was launched), attach the hooks and host the MCP proxy; when that
+    Studio exits, go back to scanning."""
+    while True:
+        pid = None
+        try:
+            pid = device.get_process("RobloxStudioBeta.exe").pid
+        except frida.ProcessNotFoundError:
+            pass
+        if pid is None:
+            time.sleep(1.5)
+            continue
+        print("[watch] Studio started (pid=%s); giving Qt a moment to load "
+              "before attach..." % pid, flush=True)
+        time.sleep(4)
+        log_file = (ROOT / "logs" / ("session-%s.log" %
+                    datetime.now().strftime("%Y%m%d-%H%M%S"))).open(
+                        "w", encoding="utf-8")
+        try:
+            run_session(device, pid, cfg, attach_mode=True, log_file=log_file)
+        except Exception as e:  # noqa: BLE001 - keep watching regardless
+            print("[watch] session error: %s" % e, flush=True)
+            log_file.close()
+        print("[watch] session ended; waiting for the next Studio start",
+              flush=True)
+        time.sleep(2)
 
 
 def main():
     ap = argparse.ArgumentParser(description="Roblox Studio UI hook launcher")
     ap.add_argument("--place", help="place file to open on spawn")
     ap.add_argument("--attach", action="store_true", help="attach to running Studio")
+    ap.add_argument("--watch", action="store_true",
+                    help="stay resident: auto-attach hooks to every Studio start")
     ap.add_argument("--list", action="store_true")
     ap.add_argument("--enable")
     ap.add_argument("--disable")
@@ -397,6 +487,10 @@ def main():
                  datetime.now().strftime("%Y%m%d-%H%M%S"))).open("w", encoding="utf-8")
     ensure_mcp_enabled(lambda m: (print(m, flush=True),
                                   log_file.write(m + "\n")))
+
+    if args.watch:
+        watch_loop(device, cfg)
+        return
 
     if args.attach:
         try:

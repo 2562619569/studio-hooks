@@ -7,7 +7,7 @@
       "text": "📦 在摄像机前方生成 Part",
       "action": "spawn_part",
       "areas": [
-        "all"
+        "viewport"
       ]
     },
     {
@@ -15,6 +15,13 @@
       "action": "camera_info",
       "areas": [
         "viewport"
+      ]
+    },
+    {
+      "text": "📋 复制节点完整路径",
+      "action": "copy_instance_path",
+      "areas": [
+        "explorer"
       ]
     },
     {

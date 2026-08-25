@@ -28,6 +28,7 @@
     var CFG = globalThis.SH_CONFIG || { entries: [], areaRules: [], debug: false };
     var W = 'Qt5Widgets.dll', CORE = 'Qt5Core.dll';
 
+    function init() {
     var QMENU_EXEC   = '?exec@QMenu@@QEAAPEAVQAction@@AEBVQPoint@@PEAV2@@Z';
     var QMENU_EXEC2  = '?exec@QMenu@@QEAAPEAVQAction@@XZ';
     var QMENU_POPUP  = '?popup@QMenu@@QEAAXAEBVQPoint@@PEAVQAction@@@Z';
@@ -212,4 +213,16 @@
     });
 
     SH.log('module armed: menu_engine (' + CFG.entries.length + ' entries)');
+    }
+
+    // Watch-mode attaches can race Studio's startup: resolve symbols only
+    // after both Qt DLLs are mapped (poll briefly).
+    function boot() {
+        if (!Process.findModuleByName(W) || !Process.findModuleByName(CORE)) {
+            setTimeout(boot, 500);
+            return;
+        }
+        init();
+    }
+    boot();
 })();

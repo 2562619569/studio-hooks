@@ -39,9 +39,24 @@ pip install frida
 
 python studio_hooks.py                 # 启动 Studio(注入+MCP代理)
 python studio_hooks.py --place x.rbxl  # 打开指定 place
+python studio_hooks.py --watch         # 常驻守护:Studio 无论怎么启动都自动注入
 python studio_hooks.py --attach        # 附加到已运行的 Studio
 python studio_hooks.py --kill          # 结束 Studio
 ```
+
+### 跟随 Studio 启动（watch 模式）
+
+`--watch` 常驻运行：检测到 RobloxStudioBeta.exe 启动（双击、开始菜单、
+命令行都一样）就自动 attach 注入并托管 MCP 代理，Studio 退出后回到扫描
+状态，支持多个 Studio 先后启动。配合开机自启即可完全无感使用：
+
+```bash
+python tools/install_startup.py           # 登录时静默启动 watcher
+python tools/install_startup.py --remove  # 取消自启
+```
+
+注意：watch 模式对**新**启动的 Studio 生效；watcher 启动前已经在跑的
+Studio 不会被接管（避免与 spawn 模式双重注入）。
 
 ## 添加一个右键功能（30 秒）
 
@@ -92,7 +107,9 @@ tools/mcp_probe.py      独立 MCP 探测脚本（调试用）
 tools/check_exports.py  枚举 Qt DLL 导出符号（验证 mangled 名）
 tools/probe_qt.py       独立 Qt API 探针（ABI/调用方式验证）
 tools/probe_explorer.py 网格扫描各面板控件的真实屏幕坐标
-tools/right_click.py    模拟右键指定坐标（自动化测试）
+tools/right_click.py    模拟右键/左键指定坐标（自动化测试）
+tools/verify_copy.py    端到端验证「复制节点完整路径」（点击菜单→读剪贴板）
+tools/install_startup.py 登录自启 watcher 的安装/卸载
 tools/screenshot.py     全屏截图（配合视觉模型核验）
 logs/             会话日志（gitignore）
 ```
@@ -102,9 +119,13 @@ logs/             会话日志（gitignore）
 - 向所有 `QMenu::exec/popup` 菜单注入条目、伪装返回值（Studio 无感知）
 - 右键区域识别 + 按区域注入不同条目（实测：3D 视口=viewport、
   Explorer=explorer、其他面板=other，判定链见 Output）
+- 视口专属：生成 Part、摄像机信息；Explorer 专属：统计选中对象、
+  **复制节点完整路径**（`GetFullName()` → 系统剪贴板，多选每行一条）
 - 右键时区域判定结果实时 `print` 到 Studio Output 窗口
 - 菜单点击 → MCP `execute_luau` 在 Edit datamodel 执行任意 Luau
   （含 ChangeHistory 撤销记录）
+- `--watch` 常驻：正常双击启动 Studio 即自动注入（含 Studio 周更后的
+  新版本目录，hook 按 mtime 自动发现）
 
 ## Qt ABI 注意（重要）
 
